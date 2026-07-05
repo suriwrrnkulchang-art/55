@@ -35,6 +35,15 @@ GUI installer ที่:
 pythonw.exe แบบไม่มี console window เลย (ไม่มีหน้าต่างดำๆ ค้างโชว์อีกต่อไป)
 output/error ของโปรแกรมหลักจะถูกเขียนลง run_log.txt ในโฟลเดอร์ที่ติดตั้งแทน
 เผื่อจำเป็นต้องเปิดดู log ตอนโปรแกรมมีปัญหา
+
+[อัปเดต] แก้ปัญหา _tkinter.TclError: version conflict for package "Tcl"
+สาเหตุ: installer เองถูก build ด้วย PyInstaller และมีหน้าต่าง tkinter ของตัวเอง
+  -> ตอนรัน PyInstaller จะแตก Tcl/Tk เวอร์ชันที่ฝังมาตอน build ไปไว้ในโฟลเดอร์
+     ชั่วคราว _MEIxxxxx แล้วตั้ง env var TCL_LIBRARY/TK_LIBRARY ชี้ไปที่นั่น
+  -> ค่า env เหล่านี้รั่วไหล (inherit) ไปยังโปรแกรมลูกที่เปิดผ่าน subprocess.Popen()
+     ทำให้ python ตัวจริงที่เพิ่งติดตั้ง (คนละเวอร์ชัน Tcl) โหลดไฟล์ผิดเวอร์ชัน
+วิธีแก้: launch_program() สร้าง environment สำเนาแล้วลบ TCL_LIBRARY/TK_LIBRARY/
+PYTHONHOME ออกก่อนส่งให้โปรแกรมลูกเสมอ
 --------------------------------------------------------------------
 """
 
@@ -578,6 +587,14 @@ shortcut.save()
         ใช้ pythonw.exe (ตัวไม่มี console) + flag กันไม่ให้ Windows สร้างหน้าต่างคอนโซลขึ้นมา
         error/output ของโปรแกรมยังถูกเก็บลง log file ไว้ที่โฟลเดอร์ติดตั้ง
         เผื่อภายหลังต้องเช็คว่าโปรแกรมพังตรงไหน (เปิดไฟล์ run_log.txt ดูได้)
+
+        [สำคัญ] ตัว installer เองถูก build ด้วย PyInstaller และมีหน้าต่าง tkinter
+        ของตัวเอง (InstallerApp) ทำให้ตอนรัน PyInstaller จะแตก Tcl/Tk เวอร์ชันที่ฝัง
+        มาตอน build ไปไว้ในโฟลเดอร์ _MEIxxxxx แล้วตั้ง env var TCL_LIBRARY/TK_LIBRARY
+        ชี้ไปที่โฟลเดอร์นั้น ถ้าปล่อยให้ subprocess.Popen() สืบทอด (inherit) ค่า env
+        เหล่านี้ไปยังโปรแกรมลูกที่รันด้วย python ตัวจริงที่เพิ่งติดตั้ง (คนละเวอร์ชัน Tcl)
+        จะเจอ error "version conflict for package Tcl: have X, need exactly Y" ทันที
+        -> แก้โดยสร้าง environment สำเนาแล้วลบ TCL_LIBRARY/TK_LIBRARY ทิ้งก่อนส่งให้ลูก
         """
         install_dir = os.path.dirname(main_file)
         exe, args = self.get_python_cmd()
@@ -585,6 +602,14 @@ shortcut.save()
 
         log_path = os.path.join(install_dir, "run_log.txt")
         log_file = open(log_path, "w", encoding="utf-8")
+
+        # env สะอาด: ไม่ให้ TCL_LIBRARY/TK_LIBRARY ของตัว installer (PyInstaller)
+        # รั่วไปปนกับ Tcl/Tk ของ python ตัวจริงที่ใช้รันโปรแกรมลูก
+        clean_env = os.environ.copy()
+        clean_env.pop("TCL_LIBRARY", None)
+        clean_env.pop("TK_LIBRARY", None)
+        # เผื่อไว้ด้วย เพราะบางเวอร์ชันของ PyInstaller ตั้งค่าตัวนี้ด้วย
+        clean_env.pop("PYTHONHOME", None)
 
         creationflags = 0
         startupinfo = None
@@ -602,6 +627,7 @@ shortcut.save()
             creationflags=creationflags,
             startupinfo=startupinfo,
             close_fds=True,
+            env=clean_env,
         )
 
 
