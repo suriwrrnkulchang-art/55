@@ -17,6 +17,20 @@ GUI installer ที่:
 หลังจากแก้โค้ดตามต้องการแล้ว ให้แปลงเป็น .exe ด้วยคำสั่ง เช่น:
     pip install pyinstaller
     pyinstaller --onefile --noconsole --icon=logo.ico --add-data "logo.ico;." main.py
+
+--------------------------------------------------------------------
+[แก้ไขล่าสุด] ปัญหาเดิม: ดาวน์โหลดจาก GitHub ได้ HTTP 404 / "File is not a zip file"
+สาเหตุที่แท้จริง: urllib.request.urlretrieve() ไม่ส่ง User-Agent header
+  -> บาง edge/CDN ของ GitHub หรือ proxy/แอนตี้ไวรัสบนเครื่องผู้ใช้ปฏิเสธ
+     request ที่ไม่มี User-Agent แล้วตอบกลับเป็นหน้า error (HTML/404)
+     แทนที่จะเป็นไฟล์ zip จริง ทำให้ zipfile.ZipFile() พังตอน extract
+วิธีแก้ในไฟล์นี้:
+  1) เปลี่ยนไปใช้ urllib.request.Request + urlopen พร้อมใส่ User-Agent header
+  2) เพิ่ม retry (ลองใหม่อัตโนมัติ 3 ครั้งก่อนยอมแพ้)
+  3) เช็ค zipfile.is_zipfile() ก่อน extract เสมอ ถ้าไม่ใช่ zip จริง
+     จะโชว์ error message ที่บอกสาเหตุชัดเจน (เช่น เนื้อหาที่ได้รับจริงๆ คืออะไร)
+     แทนที่จะขึ้นแค่ "File is not a zip file" เฉยๆ
+--------------------------------------------------------------------
 """
 
 import os
@@ -27,6 +41,7 @@ import subprocess
 import tempfile
 import traceback
 import threading
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -47,6 +62,13 @@ SHORTCUT_PACKAGES = ["pywin32", "winshell"]
 
 DEFAULT_INSTALL_DIR = str(Path.home() / APP_NAME)
 
+# ตัวเบราว์เซอร์ปลอมส่งไปกับ request ทุกครั้งที่ติดต่อ GitHub / python.org
+# กัน 404/403 ปลอมจาก edge บางตัวที่ block request ที่ไม่มี User-Agent
+HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+DOWNLOAD_MAX_RETRIES = 3
+DOWNLOAD_RETRY_DELAY_SEC = 2
+
 # ซ่อนหน้าต่าง cmd ดำๆ ตอนรันคำสั่งเบื้องหลัง (ไม่ใช้กับตอนเปิดโปรแกรมสุดท้ายที่ตั้งใจให้เห็น cmd)
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -64,6 +86,53 @@ def resource_path(relative_path):
     """หาพาธไฟล์ที่แนบมากับตัว exe ทั้งตอนรันเป็น .py และตอน build ด้วย PyInstaller"""
     base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
+
+
+def _download_with_headers(url, dest_path, progress_hook=None):
+    """
+    ดาวน์โหลดไฟล์โดยใส่ User-Agent header เสมอ (ต่างจาก urlretrieve เดิมที่ไม่ใส่)
+    รองรับ progress callback รูปแบบเดียวกับ reporthook ของ urlretrieve:
+        progress_hook(block_num, block_size, total_size)
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": HTTP_USER_AGENT})
+    block_size = 8192
+    with urllib.request.urlopen(req, timeout=30) as response:
+        total_size = int(response.headers.get("Content-Length", 0))
+        downloaded = 0
+        block_num = 0
+        with open(dest_path, "wb") as out_file:
+            while True:
+                buffer = response.read(block_size)
+                if not buffer:
+                    break
+                out_file.write(buffer)
+                downloaded += len(buffer)
+                block_num += 1
+                if progress_hook:
+                    progress_hook(block_num, block_size, total_size)
+
+
+def _download_with_retry(url, dest_path, progress_hook=None, max_retries=DOWNLOAD_MAX_RETRIES):
+    """
+    เรียก _download_with_headers ซ้ำสูงสุด max_retries ครั้งถ้าเจอปัญหาเน็ตชั่วคราว
+    (HTTP 404/403/5xx บางทีเป็นปัญหาแค่ชั่วขณะจาก edge/CDN ไม่ใช่ปัญหาถาวรเสมอไป)
+    คืนค่า exception สุดท้ายถ้าล้มเหลวครบทุกครั้ง (raise ออกไป)
+    """
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            _download_with_headers(url, dest_path, progress_hook)
+            return
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            last_error = e
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+            if attempt < max_retries:
+                time.sleep(DOWNLOAD_RETRY_DELAY_SEC)
+    raise last_error
 
 
 class InstallerApp:
@@ -273,8 +342,8 @@ class InstallerApp:
         url = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-amd64.exe"
         tmp_exe = os.path.join(tempfile.gettempdir(), "python_installer.exe")
         try:
-            urllib.request.urlretrieve(url, tmp_exe, reporthook=self._make_progress_hook(10, 25))
-        except urllib.error.URLError as e:
+            _download_with_retry(url, tmp_exe, progress_hook=self._make_progress_hook(10, 25))
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
             raise RuntimeError(f"ดาวน์โหลด Python ไม่สำเร็จ (เช็คอินเทอร์เน็ต): {e}")
 
         if not os.path.exists(tmp_exe) or os.path.getsize(tmp_exe) == 0:
@@ -317,7 +386,7 @@ class InstallerApp:
                 "ลองปิดโปรแกรมนี้แล้วเปิดใหม่อีกครั้ง"
             )
 
-    # ---- progress hook สำหรับ urlretrieve ----
+    # ---- progress hook สำหรับดาวน์โหลด ----
     def _make_progress_hook(self, start_pct, end_pct):
         def hook(block_num, block_size, total_size):
             if total_size <= 0:
@@ -331,18 +400,44 @@ class InstallerApp:
     # ---- Download from GitHub ----
     def download_and_extract(self, target_dir):
         tmp_zip = os.path.join(tempfile.gettempdir(), "repo.zip")
+
         try:
-            urllib.request.urlretrieve(
-                GITHUB_ZIP_URL, tmp_zip, reporthook=self._make_progress_hook(30, 50)
+            _download_with_retry(
+                GITHUB_ZIP_URL, tmp_zip, progress_hook=self._make_progress_hook(30, 50)
+            )
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"ดาวน์โหลดโปรเจกต์จาก GitHub ไม่สำเร็จ (HTTP {e.code}) ลองแล้ว {DOWNLOAD_MAX_RETRIES} ครั้ง\n"
+                f"URL: {GITHUB_ZIP_URL}\n"
+                "สาเหตุที่เป็นไปได้: อินเทอร์เน็ต/proxy บริษัทบล็อก github.com, "
+                "หรือ GitHub จำกัด request ชั่วคราว ลองต่อเน็ตอื่นแล้วรันใหม่"
             )
         except urllib.error.URLError as e:
-            raise RuntimeError(f"ดาวน์โหลดโปรเจกต์จาก GitHub ไม่สำเร็จ (เช็คอินเทอร์เน็ต/ลิงก์): {e}")
+            raise RuntimeError(
+                f"ดาวน์โหลดโปรเจกต์จาก GitHub ไม่สำเร็จ (เช็คอินเทอร์เน็ต/ลิงก์): {e}"
+            )
+
+        # เช็คก่อนว่าไฟล์ที่โหลดมาเป็น zip จริง ไม่ใช่หน้า HTML/error page
+        if not zipfile.is_zipfile(tmp_zip):
+            preview = ""
+            try:
+                with open(tmp_zip, "rb") as f:
+                    preview = f.read(200).decode("utf-8", errors="ignore")
+            except OSError:
+                pass
+            if os.path.exists(tmp_zip):
+                os.remove(tmp_zip)
+            raise RuntimeError(
+                "ไฟล์ที่ดาวน์โหลดมาไม่ใช่ zip ที่ถูกต้อง\n"
+                f"URL: {GITHUB_ZIP_URL}\n"
+                f"เนื้อหาที่ได้รับ (ตัวอย่าง): {preview[:150]!r}"
+            )
 
         try:
             with zipfile.ZipFile(tmp_zip, "r") as z:
                 z.extractall(target_dir)
         except zipfile.BadZipFile:
-            raise RuntimeError("ไฟล์ที่ดาวน์โหลดมาไม่ใช่ไฟล์ zip ที่ถูกต้อง (ลิงก์ GitHub อาจไม่ถูกต้อง)")
+            raise RuntimeError("ไฟล์ zip เสียหายระหว่างดาวน์โหลด ลองรันโปรแกรมติดตั้งใหม่อีกครั้ง")
         finally:
             if os.path.exists(tmp_zip):
                 os.remove(tmp_zip)
