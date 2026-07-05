@@ -39,7 +39,7 @@ from tkinter import ttk, filedialog, messagebox
 # ------------------------------------------------------------------
 APP_NAME = "FilterCore"
 APP_LOGO_PATH = "logo.ico"
-GITHUB_ZIP_URL = "https://github.com/suriwrrnkulchang-art/master/archive/refs/heads/main.zip"
+GITHUB_ZIP_URL = "https://github.com/suriwrrnkulchang-art/FilterCore/archive/refs/heads/main.zip"
 MAIN_PY_FILE = "main.py"
 PYTHON_VERSION = "3.12.4"
 PIP_PACKAGES = ["numpy", "speechrecognition", "soundfile", "pyaudio"]
