@@ -7,9 +7,9 @@ GUI installer ที่:
   - ให้เลือกโฟลเดอร์ปลายทางที่จะติดตั้ง
   - ดาวน์โหลดโปรเจกต์จาก GitHub (zip)
   - เช็ค/ติดตั้ง Python 3.12 ถ้ายังไม่มี (ขอ confirm จากผู้ใช้ก่อน)
-  - รันคำสั่งติดตั้ง pip package ผ่าน cmd (subprocess)
-  - รันไฟล์ .py หลักหลังติดตั้งเสร็จ "ผ่าน cmd" (ตามที่ main.py ของโปรเจกต์ต้องการ)
-    + สร้าง shortcut บนเดสก์ท็อป
+  - รันคำสั่งติดตั้ง pip package ผ่าน cmd (subprocess, ซ่อนหน้าต่าง)
+  - รันไฟล์ .py หลักหลังติดตั้งเสร็จแบบไม่โชว์หน้าต่าง cmd (ใช้ pythonw.exe)
+    + สร้าง shortcut บนเดสก์ท็อป (shortcut ก็ชี้ไปที่ pythonw.exe เช่นกัน จะได้ไม่มี cmd โผล่ตอนดับเบิลคลิกด้วย)
   - ถ้าขั้นตอนไหน error จะแจ้งเตือนแล้วปิดโปรแกรม
 
 ใช้งานได้บน Windows เท่านั้น (ใช้ py launcher, cmd.exe, .lnk shortcut, pywin32/winshell)
@@ -30,6 +30,11 @@ GUI installer ที่:
   3) เช็ค zipfile.is_zipfile() ก่อน extract เสมอ ถ้าไม่ใช่ zip จริง
      จะโชว์ error message ที่บอกสาเหตุชัดเจน (เช่น เนื้อหาที่ได้รับจริงๆ คืออะไร)
      แทนที่จะขึ้นแค่ "File is not a zip file" เฉยๆ
+
+[อัปเดต] launch_program() เปลี่ยนจากเปิด cmd (start "" cmd /k ...) เป็นรันผ่าน
+pythonw.exe แบบไม่มี console window เลย (ไม่มีหน้าต่างดำๆ ค้างโชว์อีกต่อไป)
+output/error ของโปรแกรมหลักจะถูกเขียนลง run_log.txt ในโฟลเดอร์ที่ติดตั้งแทน
+เผื่อจำเป็นต้องเปิดดู log ตอนโปรแกรมมีปัญหา
 --------------------------------------------------------------------
 """
 
@@ -568,13 +573,36 @@ shortcut.save()
 
     # ---- เปิดโปรแกรม: ต้องผ่าน cmd จริงๆ ตามที่ main.py ของโปรเจกต์ต้องการ ----
     def launch_program(self, main_file):
+        """
+        รันโปรแกรมหลักแบบไม่โชว์หน้าต่าง cmd ดำๆ เลย
+        ใช้ pythonw.exe (ตัวไม่มี console) + flag กันไม่ให้ Windows สร้างหน้าต่างคอนโซลขึ้นมา
+        error/output ของโปรแกรมยังถูกเก็บลง log file ไว้ที่โฟลเดอร์ติดตั้ง
+        เผื่อภายหลังต้องเช็คว่าโปรแกรมพังตรงไหน (เปิดไฟล์ run_log.txt ดูได้)
+        """
         install_dir = os.path.dirname(main_file)
         exe, args = self.get_python_cmd()
-        exe_part = _quote_if_needed(exe)
-        py_call = f'{exe_part} {" ".join(args)} "{main_file}"'.strip()
-        # เปิดหน้าต่าง cmd ใหม่แล้วรันโปรแกรมข้างใน (/k = เปิดค้างไว้ให้เห็น log/error)
-        cmd_line = f'start "" cmd /k {py_call}'
-        subprocess.Popen(cmd_line, cwd=install_dir, shell=True)
+        pyw_exe = self.find_pythonw_path(exe, args)
+
+        log_path = os.path.join(install_dir, "run_log.txt")
+        log_file = open(log_path, "w", encoding="utf-8")
+
+        creationflags = 0
+        startupinfo = None
+        if os.name == "nt":
+            creationflags = CREATE_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0)
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        subprocess.Popen(
+            [pyw_exe, main_file],
+            cwd=install_dir,
+            stdout=log_file,
+            stderr=log_file,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            startupinfo=startupinfo,
+            close_fds=True,
+        )
 
 
 def main():
