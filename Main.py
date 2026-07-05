@@ -81,7 +81,7 @@ class InstallerApp:
                 pass
 
         self.install_dir = tk.StringVar(value=DEFAULT_INSTALL_DIR)
-        self._python_cmd_cache = None  # cache ("py", ["-3.12"]) หรือ ("python", [])
+        self._python_cmd_cache = None  # cache (full_path_or_exe, [extra_args])
         self._build_ui()
 
     # ---------------- UI ----------------
@@ -197,10 +197,49 @@ class InstallerApp:
             traceback.print_exc()
             self.show_error_and_close(f"การติดตั้งล้มเหลว:\n{e}")
 
-    # ---- หา python launcher ที่ใช้งานได้จริงบนเครื่องนี้ ----
+    # ---- ตำแหน่งที่ตัวติดตั้งของ python.org จะวาง python.exe ไว้จริง ๆ
+    #      สำหรับ per-user install (InstallAllUsers=0) เช่น
+    #      C:\Users\<user>\AppData\Local\Programs\Python\Python312\python.exe
+    #      คำนวณจาก major.minor ของ PYTHON_VERSION เพื่อไม่ต้อง hardcode ----
+    def _python_major_minor_tag(self):
+        parts = PYTHON_VERSION.split(".")
+        return f"{parts[0]}{parts[1]}"  # "3.12.4" -> "312"
+
+    def python_install_dir(self):
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if not local_appdata:
+            return None
+        return os.path.join(
+            local_appdata, "Programs", "Python", f"Python{self._python_major_minor_tag()}"
+        )
+
+    def find_known_python312(self):
+        """
+        หา python.exe ของเวอร์ชันที่เราติดตั้งเอง จากตำแหน่งติดตั้งมาตรฐาน
+        โดยไม่พึ่ง PATH หรือ py launcher เลย -> เชื่อถือได้แม้เพิ่งติดตั้งเสร็จใหม่ ๆ
+        (สาเหตุหลักที่ของเดิมพังคือ: หลังติดตั้ง python เสร็จ ตัวโปรเซสของ installer
+        ที่รันอยู่ยังใช้ PATH เก่าค้างอยู่ ทำให้ 'py -3.12'/'python' หาไม่เจอ
+        ทั้งที่ติดตั้งสำเร็จแล้วจริง ๆ)
+        """
+        install_dir = self.python_install_dir()
+        if install_dir:
+            exe_path = os.path.join(install_dir, "python.exe")
+            if os.path.exists(exe_path):
+                return exe_path
+        return None
+
+    # ---- หา python ที่ใช้งานได้จริงบนเครื่องนี้ ----
     def get_python_cmd(self):
         if self._python_cmd_cache:
             return self._python_cmd_cache
+
+        # 1) ตำแหน่งติดตั้งมาตรฐานที่เรารู้ล่วงหน้า (เชื่อถือได้สุด ไม่พึ่ง PATH)
+        known = self.find_known_python312()
+        if known:
+            self._python_cmd_cache = (known, [])
+            return self._python_cmd_cache
+
+        # 2) py launcher / python บน PATH (กรณีเครื่องมี python อยู่แล้วก่อนหน้า)
         candidates = [("py", ["-3.12"]), ("py", []), ("python", [])]
         for exe, args in candidates:
             try:
@@ -218,6 +257,8 @@ class InstallerApp:
 
     # ---- Python check/install ----
     def check_python(self):
+        if self.find_known_python312():
+            return True
         try:
             out = subprocess.run(
                 ["py", "-3.12", "--version"],
@@ -236,13 +277,45 @@ class InstallerApp:
         except urllib.error.URLError as e:
             raise RuntimeError(f"ดาวน์โหลด Python ไม่สำเร็จ (เช็คอินเทอร์เน็ต): {e}")
 
+        if not os.path.exists(tmp_exe) or os.path.getsize(tmp_exe) == 0:
+            raise RuntimeError("ไฟล์ตัวติดตั้ง Python ที่ดาวน์โหลดมาไม่สมบูรณ์ ลองใหม่อีกครั้ง")
+
+        self.set_status("กำลังติดตั้ง Python (อาจใช้เวลาสักครู่ อย่าปิดโปรแกรม)...", 27)
+
+        install_log = os.path.join(tempfile.gettempdir(), "python_install.log")
         result = subprocess.run(
-            [tmp_exe, "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1"],
+            [
+                tmp_exe,
+                "/quiet",
+                "InstallAllUsers=0",
+                "PrependPath=1",
+                "Include_launcher=1",
+                "Include_test=0",
+                f"/log={install_log}",
+            ],
         )
-        if result.returncode != 0:
-            raise RuntimeError("ติดตั้ง Python ไม่สำเร็จ")
-        # reset cache เพราะเพิ่งลง python ใหม่
+
+        try:
+            os.remove(tmp_exe)
+        except OSError:
+            pass
+
+        # exit code 0 = สำเร็จ, 3010 = สำเร็จแต่ต้องรีสตาร์ทเครื่อง (ยังใช้งานต่อได้ทันทีในกรณีส่วนใหญ่)
+        if result.returncode not in (0, 3010):
+            raise RuntimeError(
+                f"ติดตั้ง Python ไม่สำเร็จ (exit code {result.returncode})\n"
+                f"ดู log เพิ่มเติมได้ที่: {install_log}"
+            )
+
+        # reset cache เพราะเพิ่งลง python ใหม่ แล้วยืนยันว่าหาไฟล์ python.exe เจอจริง ๆ
+        # (แทนที่จะเชื่อว่า PATH/py launcher จะพร้อมใช้ทันที ซึ่งเป็นสาเหตุหลักของบั๊กเดิม)
         self._python_cmd_cache = None
+        if not self.find_known_python312():
+            raise RuntimeError(
+                "ติดตั้ง Python เสร็จแล้ว แต่หาไฟล์ python.exe ไม่พบที่ตำแหน่งที่คาดไว้\n"
+                f"({self.python_install_dir()})\n"
+                "ลองปิดโปรแกรมนี้แล้วเปิดใหม่อีกครั้ง"
+            )
 
     # ---- progress hook สำหรับ urlretrieve ----
     def _make_progress_hook(self, start_pct, end_pct):
