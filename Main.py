@@ -34,7 +34,7 @@ from tkinter import ttk, filedialog, messagebox
 # ------------------------------------------------------------------
 APP_NAME = "MyProgram"                 # ชื่อโปรแกรมที่จะแสดง
 APP_LOGO_PATH = "logo.ico"             # ไฟล์โลโก้ (.ico สำหรับ exe/shortcut, .png ใช้แสดงใน GUI ได้)
-GITHUB_ZIP_URL = "https://github.com/suriwrrnkulchang-art/master/archive/refs/heads/master.zip"
+GITHUB_ZIP_URL = "https://github.com/suriwrrnkulchang-art/master.git"
 MAIN_PY_FILE = "main.py"               # ไฟล์ .py หลักในโปรเจกต์ที่จะให้รันหลังติดตั้ง
 PYTHON_VERSION = "3.12.4"              # เวอร์ชัน python ที่จะติดตั้งถ้าเครื่องยังไม่มี
 PIP_PACKAGES = ["numpy", "speechrecognition", "soundfile", "pyaudio"]
