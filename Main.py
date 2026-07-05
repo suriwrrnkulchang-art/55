@@ -6,29 +6,24 @@ GUI installer ที่:
   - มีหน้าติดตั้งพร้อม progress bar + สถานะ
   - ให้เลือกโฟลเดอร์ปลายทางที่จะติดตั้ง
   - ดาวน์โหลดโปรเจกต์จาก GitHub (zip)
-  - เช็ค/ติดตั้ง Python 3.12 ถ้ายังไม่มี (ขอ confirm จากผู้ใช้ก่อน)
+  - เช็ค/ติดตั้ง Python 3.12 ถ้ายังไม่มี
   - รันคำสั่งติดตั้ง pip package ผ่าน cmd (subprocess)
-  - รันไฟล์ .py หลักหลังติดตั้งเสร็จ "ผ่าน cmd" (ตามที่ main.py ของโปรเจกต์ต้องการ)
-    + สร้าง shortcut บนเดสก์ท็อป
+  - รันไฟล์ .py หลักหลังติดตั้งเสร็จ + สร้าง shortcut บนเดสก์ท็อป
   - ถ้าขั้นตอนไหน error จะแจ้งเตือนแล้วปิดโปรแกรม
 
-ใช้งานได้บน Windows เท่านั้น (ใช้ py launcher, cmd.exe, .lnk shortcut, pywin32/winshell)
-
-หลังจากแก้โค้ดตามต้องการแล้ว ให้แปลงเป็น .exe ด้วยคำสั่ง เช่น:
-    pip install pyinstaller
-    pyinstaller --onefile --noconsole --icon=logo.ico --add-data "logo.ico;." main.py
+หลังจากแก้โค้ดตามต้องการแล้ว ให้แปลงเป็น .exe ด้วยคำสั่ง (ดูท้ายไฟล์ README.txt)
 """
 
 import os
 import sys
 import shutil
 import zipfile
+import ctypes
 import subprocess
 import tempfile
 import traceback
 import threading
 import urllib.request
-import urllib.error
 from pathlib import Path
 
 import tkinter as tk
@@ -37,31 +32,23 @@ from tkinter import ttk, filedialog, messagebox
 # ------------------------------------------------------------------
 # ตั้งค่าตรงนี้ตามโปรแกรมของคุณ (จุดที่ "เปลี่ยนโลโก้ได้ เปลี่ยนชื่อได้")
 # ------------------------------------------------------------------
-APP_NAME = "FilterCore"
-APP_LOGO_PATH = "logo.ico"
+APP_NAME = "MyProgram"                 # ชื่อโปรแกรมที่จะแสดง
+APP_LOGO_PATH = "logo.ico"             # ไฟล์โลโก้ (.ico สำหรับ exe/shortcut, .png ใช้แสดงใน GUI ได้)
 GITHUB_ZIP_URL = "https://github.com/suriwrrnkulchang-art/master/archive/refs/heads/main.zip"
-MAIN_PY_FILE = "main.py"
-PYTHON_VERSION = "3.12.4"
+MAIN_PY_FILE = "main.py"               # ไฟล์ .py หลักในโปรเจกต์ที่จะให้รันหลังติดตั้ง
+PYTHON_VERSION = "3.12.4"              # เวอร์ชัน python ที่จะติดตั้งถ้าเครื่องยังไม่มี
 PIP_PACKAGES = ["numpy", "speechrecognition", "soundfile", "pyaudio"]
-SHORTCUT_PACKAGES = ["pywin32", "winshell"]
+SHORTCUT_PACKAGES = ["pywin32", "winshell"]   # ใช้เฉพาะตอนสร้าง shortcut บนเดสก์ท็อป
 
 DEFAULT_INSTALL_DIR = str(Path.home() / APP_NAME)
 
-# ซ่อนหน้าต่าง cmd ดำๆ ตอนรันคำสั่งเบื้องหลัง (ไม่ใช้กับตอนเปิดโปรแกรมสุดท้ายที่ตั้งใจให้เห็น cmd)
-CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
-
-
-def _quote_if_needed(path):
-    """
-    Windows quirk: ถ้า quote ชื่อ executable ที่ไม่มี path/extension (เช่น "py")
-    cmd.exe จะไม่ทำ PATHEXT lookup (ที่แปลง py -> py.exe) ทำให้หา command ไม่เจอ
-    -> quote เฉพาะตอนที่ path มีช่องว่างจริงๆ (เช่น "C:\\Program Files\\...")
-    """
-    return f'"{path}"' if " " in path else path
-
 
 def resource_path(relative_path):
-    """หาพาธไฟล์ที่แนบมากับตัว exe ทั้งตอนรันเป็น .py และตอน build ด้วย PyInstaller"""
+    """
+    หาพาธไฟล์ที่แนบมากับตัว exe ให้ถูกต้อง
+    ทั้งตอนรันเป็น .py ปกติ และตอนถูก build เป็น .exe แบบ --onefile ด้วย PyInstaller
+    (PyInstaller จะแตกไฟล์แนบไปไว้ที่โฟลเดอร์ temp ชื่อ sys._MEIPASS ชั่วคราว)
+    """
     base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
@@ -73,6 +60,7 @@ class InstallerApp:
         self.root.geometry("480x360")
         self.root.resizable(False, False)
 
+        # ใส่ไอคอนหน้าต่าง ถ้ามีไฟล์ .ico
         logo_src = resource_path(APP_LOGO_PATH)
         if os.path.exists(logo_src):
             try:
@@ -81,7 +69,6 @@ class InstallerApp:
                 pass
 
         self.install_dir = tk.StringVar(value=DEFAULT_INSTALL_DIR)
-        self._python_cmd_cache = None  # cache (full_path_or_exe, [extra_args])
         self._build_ui()
 
     # ---------------- UI ----------------
@@ -92,6 +79,7 @@ class InstallerApp:
         subtitle = tk.Label(self.root, text="กด 'เริ่มติดตั้ง' เพื่อดาวน์โหลดและติดตั้งโปรแกรม")
         subtitle.pack(pady=(0, 15))
 
+        # เลือกโฟลเดอร์ปลายทาง
         frame_path = tk.Frame(self.root)
         frame_path.pack(fill="x", padx=20)
         tk.Label(frame_path, text="ตำแหน่งติดตั้ง:").pack(anchor="w")
@@ -100,6 +88,7 @@ class InstallerApp:
         tk.Entry(path_row, textvariable=self.install_dir).pack(side="left", fill="x", expand=True)
         tk.Button(path_row, text="เลือก...", command=self.choose_dir).pack(side="left", padx=5)
 
+        # progress bar + label สถานะ
         self.status_label = tk.Label(self.root, text="รอเริ่มการติดตั้ง...", anchor="w")
         self.status_label.pack(fill="x", padx=20, pady=(20, 5))
 
@@ -117,38 +106,11 @@ class InstallerApp:
         if d:
             self.install_dir.set(d)
 
-    # ---- ทุกอย่างที่แตะ Tk widget จากเธรดพื้นหลัง ต้องผ่าน root.after เท่านั้น ----
     def set_status(self, text, percent=None):
-        def _update():
-            self.status_label.config(text=text)
-            if percent is not None:
-                self.progress["value"] = percent
-        self.root.after(0, _update)
-
-    def show_error_and_close(self, message):
-        def _do():
-            messagebox.showerror("เกิดข้อผิดพลาด", message)
-            self.root.destroy()
-        self.root.after(0, _do)
-
-    def show_info_and_close(self, message):
-        def _do():
-            messagebox.showinfo("สำเร็จ", message)
-            self.root.destroy()
-        self.root.after(0, _do)
-
-    def ask_confirm_from_thread(self, title, message):
-        """ขอ yes/no จากผู้ใช้ แต่เรียกจากเธรดพื้นหลัง ต้อง block รอผลลัพธ์"""
-        result = {}
-        event = threading.Event()
-
-        def _ask():
-            result["value"] = messagebox.askyesno(title, message)
-            event.set()
-
-        self.root.after(0, _ask)
-        event.wait()
-        return result.get("value", False)
+        self.status_label.config(text=text)
+        if percent is not None:
+            self.progress["value"] = percent
+        self.root.update_idletasks()
 
     # ---------------- Logic ----------------
     def start_install_thread(self):
@@ -158,194 +120,75 @@ class InstallerApp:
 
     def run_install(self):
         try:
-            target_dir = self.install_dir.get().strip()
-            if not target_dir:
-                raise ValueError("กรุณาระบุตำแหน่งติดตั้ง")
+            target_dir = self.install_dir.get()
             os.makedirs(target_dir, exist_ok=True)
 
+            # ขั้นที่ 1: เช็ค/ติดตั้ง python 3.12
             self.set_status("กำลังตรวจสอบ Python...", 5)
             if not self.check_python():
-                proceed = self.ask_confirm_from_thread(
-                    "ติดตั้ง Python",
-                    f"ไม่พบ Python {PYTHON_VERSION} บนเครื่องนี้\n"
-                    "โปรแกรมจะดาวน์โหลดและติดตั้งให้อัตโนมัติ ต้องการดำเนินการต่อหรือไม่?"
-                )
-                if not proceed:
-                    raise RuntimeError("ผู้ใช้ยกเลิกการติดตั้ง Python")
-                self.set_status("กำลังดาวน์โหลด Python...", 10)
+                self.set_status("ไม่พบ Python 3.12 กำลังดาวน์โหลด...", 10)
                 self.install_python()
 
+            # ขั้นที่ 2: ดาวน์โหลดโปรเจกต์จาก GitHub
             self.set_status("กำลังดาวน์โหลดไฟล์จาก GitHub...", 30)
             extracted_path = self.download_and_extract(target_dir)
 
+            # ขั้นที่ 3: ติดตั้ง pip package ผ่าน cmd
             self.set_status("กำลังติดตั้งไลบรารีที่จำเป็น...", 55)
             self.install_pip_packages()
 
+            # ขั้นที่ 4: ตรวจสอบว่าไฟล์หลักรันได้ไหม
             self.set_status("กำลังตรวจสอบโปรแกรม...", 80)
             main_file = self.find_main_file(extracted_path)
             self.verify_runnable(main_file)
 
+            # ขั้นที่ 5: สร้าง shortcut บนเดสก์ท็อป
             self.set_status("กำลังสร้างทางลัดบนเดสก์ท็อป...", 90)
             self.create_desktop_shortcut(main_file, extracted_path)
 
+            # ขั้นที่ 6: เปิดโปรแกรมทันที
             self.set_status("ติดตั้งเสร็จสมบูรณ์! กำลังเปิดโปรแกรม...", 100)
             self.launch_program(main_file)
 
-            self.show_info_and_close(f"ติดตั้ง {APP_NAME} เรียบร้อยแล้ว")
+            messagebox.showinfo("สำเร็จ", f"ติดตั้ง {APP_NAME} เรียบร้อยแล้ว")
+            self.root.after(500, self.root.destroy)
 
         except Exception as e:
             traceback.print_exc()
-            self.show_error_and_close(f"การติดตั้งล้มเหลว:\n{e}")
-
-    # ---- ตำแหน่งที่ตัวติดตั้งของ python.org จะวาง python.exe ไว้จริง ๆ
-    #      สำหรับ per-user install (InstallAllUsers=0) เช่น
-    #      C:\Users\<user>\AppData\Local\Programs\Python\Python312\python.exe
-    #      คำนวณจาก major.minor ของ PYTHON_VERSION เพื่อไม่ต้อง hardcode ----
-    def _python_major_minor_tag(self):
-        parts = PYTHON_VERSION.split(".")
-        return f"{parts[0]}{parts[1]}"  # "3.12.4" -> "312"
-
-    def python_install_dir(self):
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if not local_appdata:
-            return None
-        return os.path.join(
-            local_appdata, "Programs", "Python", f"Python{self._python_major_minor_tag()}"
-        )
-
-    def find_known_python312(self):
-        """
-        หา python.exe ของเวอร์ชันที่เราติดตั้งเอง จากตำแหน่งติดตั้งมาตรฐาน
-        โดยไม่พึ่ง PATH หรือ py launcher เลย -> เชื่อถือได้แม้เพิ่งติดตั้งเสร็จใหม่ ๆ
-        (สาเหตุหลักที่ของเดิมพังคือ: หลังติดตั้ง python เสร็จ ตัวโปรเซสของ installer
-        ที่รันอยู่ยังใช้ PATH เก่าค้างอยู่ ทำให้ 'py -3.12'/'python' หาไม่เจอ
-        ทั้งที่ติดตั้งสำเร็จแล้วจริง ๆ)
-        """
-        install_dir = self.python_install_dir()
-        if install_dir:
-            exe_path = os.path.join(install_dir, "python.exe")
-            if os.path.exists(exe_path):
-                return exe_path
-        return None
-
-    # ---- หา python ที่ใช้งานได้จริงบนเครื่องนี้ ----
-    def get_python_cmd(self):
-        if self._python_cmd_cache:
-            return self._python_cmd_cache
-
-        # 1) ตำแหน่งติดตั้งมาตรฐานที่เรารู้ล่วงหน้า (เชื่อถือได้สุด ไม่พึ่ง PATH)
-        known = self.find_known_python312()
-        if known:
-            self._python_cmd_cache = (known, [])
-            return self._python_cmd_cache
-
-        # 2) py launcher / python บน PATH (กรณีเครื่องมี python อยู่แล้วก่อนหน้า)
-        candidates = [("py", ["-3.12"]), ("py", []), ("python", [])]
-        for exe, args in candidates:
-            try:
-                out = subprocess.run(
-                    [exe] + args + ["--version"],
-                    capture_output=True, text=True,
-                    creationflags=CREATE_NO_WINDOW
-                )
-                if out.returncode == 0:
-                    self._python_cmd_cache = (exe, args)
-                    return self._python_cmd_cache
-            except FileNotFoundError:
-                continue
-        raise RuntimeError("ไม่พบ Python ที่ใช้งานได้บนเครื่องนี้")
+            messagebox.showerror("เกิดข้อผิดพลาด", f"การติดตั้งล้มเหลว:\n{e}")
+            self.root.destroy()
+            sys.exit(1)
 
     # ---- Python check/install ----
     def check_python(self):
-        if self.find_known_python312():
-            return True
         try:
             out = subprocess.run(
                 ["py", "-3.12", "--version"],
-                capture_output=True, text=True,
-                creationflags=CREATE_NO_WINDOW
+                capture_output=True, text=True, shell=True
             )
             return out.returncode == 0
-        except FileNotFoundError:
+        except Exception:
             return False
 
     def install_python(self):
         url = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-amd64.exe"
         tmp_exe = os.path.join(tempfile.gettempdir(), "python_installer.exe")
-        try:
-            urllib.request.urlretrieve(url, tmp_exe, reporthook=self._make_progress_hook(10, 25))
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"ดาวน์โหลด Python ไม่สำเร็จ (เช็คอินเทอร์เน็ต): {e}")
-
-        if not os.path.exists(tmp_exe) or os.path.getsize(tmp_exe) == 0:
-            raise RuntimeError("ไฟล์ตัวติดตั้ง Python ที่ดาวน์โหลดมาไม่สมบูรณ์ ลองใหม่อีกครั้ง")
-
-        self.set_status("กำลังติดตั้ง Python (อาจใช้เวลาสักครู่ อย่าปิดโปรแกรม)...", 27)
-
-        install_log = os.path.join(tempfile.gettempdir(), "python_install.log")
+        urllib.request.urlretrieve(url, tmp_exe)
+        # ติดตั้งแบบ silent พร้อมเพิ่ม PATH และ py launcher
         result = subprocess.run(
-            [
-                tmp_exe,
-                "/quiet",
-                "InstallAllUsers=0",
-                "PrependPath=1",
-                "Include_launcher=1",
-                "Include_test=0",
-                f"/log={install_log}",
-            ],
+            [tmp_exe, "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1"],
+            shell=True
         )
-
-        try:
-            os.remove(tmp_exe)
-        except OSError:
-            pass
-
-        # exit code 0 = สำเร็จ, 3010 = สำเร็จแต่ต้องรีสตาร์ทเครื่อง (ยังใช้งานต่อได้ทันทีในกรณีส่วนใหญ่)
-        if result.returncode not in (0, 3010):
-            raise RuntimeError(
-                f"ติดตั้ง Python ไม่สำเร็จ (exit code {result.returncode})\n"
-                f"ดู log เพิ่มเติมได้ที่: {install_log}"
-            )
-
-        # reset cache เพราะเพิ่งลง python ใหม่ แล้วยืนยันว่าหาไฟล์ python.exe เจอจริง ๆ
-        # (แทนที่จะเชื่อว่า PATH/py launcher จะพร้อมใช้ทันที ซึ่งเป็นสาเหตุหลักของบั๊กเดิม)
-        self._python_cmd_cache = None
-        if not self.find_known_python312():
-            raise RuntimeError(
-                "ติดตั้ง Python เสร็จแล้ว แต่หาไฟล์ python.exe ไม่พบที่ตำแหน่งที่คาดไว้\n"
-                f"({self.python_install_dir()})\n"
-                "ลองปิดโปรแกรมนี้แล้วเปิดใหม่อีกครั้ง"
-            )
-
-    # ---- progress hook สำหรับ urlretrieve ----
-    def _make_progress_hook(self, start_pct, end_pct):
-        def hook(block_num, block_size, total_size):
-            if total_size <= 0:
-                return
-            downloaded = block_num * block_size
-            frac = min(downloaded / total_size, 1.0)
-            pct = start_pct + frac * (end_pct - start_pct)
-            self.set_status(f"กำลังดาวน์โหลด... {int(frac * 100)}%", pct)
-        return hook
+        if result.returncode != 0:
+            raise RuntimeError("ติดตั้ง Python ไม่สำเร็จ")
 
     # ---- Download from GitHub ----
     def download_and_extract(self, target_dir):
         tmp_zip = os.path.join(tempfile.gettempdir(), "repo.zip")
-        try:
-            urllib.request.urlretrieve(
-                GITHUB_ZIP_URL, tmp_zip, reporthook=self._make_progress_hook(30, 50)
-            )
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"ดาวน์โหลดโปรเจกต์จาก GitHub ไม่สำเร็จ (เช็คอินเทอร์เน็ต/ลิงก์): {e}")
-
-        try:
-            with zipfile.ZipFile(tmp_zip, "r") as z:
-                z.extractall(target_dir)
-        except zipfile.BadZipFile:
-            raise RuntimeError("ไฟล์ที่ดาวน์โหลดมาไม่ใช่ไฟล์ zip ที่ถูกต้อง (ลิงก์ GitHub อาจไม่ถูกต้อง)")
-        finally:
-            if os.path.exists(tmp_zip):
-                os.remove(tmp_zip)
+        urllib.request.urlretrieve(GITHUB_ZIP_URL, tmp_zip)
+        with zipfile.ZipFile(tmp_zip, "r") as z:
+            z.extractall(target_dir)
+        os.remove(tmp_zip)
         return target_dir
 
     def find_main_file(self, base_dir):
@@ -359,16 +202,14 @@ class InstallerApp:
             raise FileNotFoundError(f"หาไฟล์ {filename} ไม่พบหลังแตกไฟล์")
         return None
 
-    # ---- pip install ผ่าน cmd จริง ----
+    # ---- pip install ผ่าน cmd (ใช้ซ้ำได้กับรายการ package ใดก็ได้) ----
     def pip_install(self, packages):
-        exe, args = self.get_python_cmd()
         pkg_str = " ".join(packages)
-        exe_part = _quote_if_needed(exe)
-        cmd = f'{exe_part} {" ".join(args)} -m pip install --upgrade {pkg_str}'.strip()
+        # รันผ่าน cmd จริง ๆ ตามที่ขอ: py -m pip install ...
+        cmd = f'py -3.12 -m pip install {pkg_str}'
         result = subprocess.run(
             ["cmd", "/c", cmd],
-            capture_output=True, text=True,
-            creationflags=CREATE_NO_WINDOW
+            capture_output=True, text=True
         )
         if result.returncode != 0:
             raise RuntimeError(f"ติดตั้งไลบรารีล้มเหลว ({pkg_str}):\n{result.stderr}")
@@ -376,46 +217,24 @@ class InstallerApp:
     def install_pip_packages(self):
         self.pip_install(PIP_PACKAGES)
 
-    # ---- ตรวจสอบว่าโปรแกรมรันได้ (syntax check) ----
+    # ---- ตรวจสอบว่าโปรแกรมรันได้ ----
     def verify_runnable(self, main_file):
-        exe, args = self.get_python_cmd()
-        code = "import ast; ast.parse(open(r'%s', encoding='utf-8').read())" % main_file
         result = subprocess.run(
-            [exe] + args + ["-c", code],
-            capture_output=True, text=True,
-            creationflags=CREATE_NO_WINDOW
+            ["py", "-3.12", "-c", "import ast; ast.parse(open(r'%s', encoding='utf-8').read())" % main_file],
+            capture_output=True, text=True
         )
         if result.returncode != 0:
             raise RuntimeError(f"ไฟล์โปรแกรมมีปัญหา รันไม่ได้:\n{result.stderr}")
-
-    # ---- หา full path ของ pythonw.exe จริงๆ (shortcut ต้องการ path เต็ม ใช้ PATH search แบบ cmd ไม่ได้) ----
-    def find_pythonw_path(self, exe, args):
-        result = subprocess.run(
-            [exe] + args + ["-c", "import sys; print(sys.executable)"],
-            capture_output=True, text=True,
-            creationflags=CREATE_NO_WINDOW
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            raise RuntimeError(f"หา path ของ Python ไม่สำเร็จ:\n{result.stderr}")
-
-        python_exe_path = result.stdout.strip()
-        python_dir = os.path.dirname(python_exe_path)
-        pythonw_path = os.path.join(python_dir, "pythonw.exe")
-
-        if os.path.exists(pythonw_path):
-            return pythonw_path
-        # บางระบบ (เช่น venv บางแบบ) ไม่มี pythonw.exe แยก -> fallback ไปใช้ python.exe ตัวเต็ม path แทน
-        if os.path.exists(python_exe_path):
-            return python_exe_path
-        raise RuntimeError(f"หาไม่พบทั้ง pythonw.exe และ python.exe ที่ {python_dir}")
 
     # ---- สร้าง shortcut บนเดสก์ท็อป ----
     def create_desktop_shortcut(self, main_file, extracted_path=None):
         install_dir = os.path.dirname(main_file)
 
-        # ติดตั้ง pywin32 / winshell ให้ python ที่จะใช้สร้าง shortcut
+        # 1) ติดตั้ง pywin32 / winshell ให้ Python 3.12 ที่เพิ่งลงไว้โดยอัตโนมัติ
         self.pip_install(SHORTCUT_PACKAGES)
 
+        # 2) หาไฟล์โลโก้: ให้ความสำคัญกับโลโก้ที่ดาวน์โหลดมาจาก repo GitHub ก่อน
+        #    ถ้าใน repo ไม่มีไฟล์โลโก้ ค่อย fallback ไปใช้ตัวที่ฝังมากับ installer.exe เอง
         logo_filename = os.path.basename(APP_LOGO_PATH)
         logo_src = None
         if extracted_path:
@@ -425,6 +244,10 @@ class InstallerApp:
             if os.path.exists(fallback):
                 logo_src = fallback
 
+        # copy โลโก้ไปเก็บถาวรไว้ในโฟลเดอร์ที่ติดตั้ง
+        # (สำคัญมาก: ถ้าไม่ copy ไอคอนจะหายไปทันทีหลังปิด installer
+        #  เพราะไฟล์ต้นฉบับที่แนบมากับ .exe แบบ --onefile จะอยู่ใน temp ชั่วคราวเท่านั้น
+        #  ส่วนไฟล์ที่โหลดมาจาก GitHub ก็อาจอยู่คนละที่กับ main_file ถ้า repo มีโฟลเดอร์ย่อย)
         icon_path = ""
         if logo_src:
             icon_dest = os.path.join(install_dir, logo_filename)
@@ -434,15 +257,10 @@ class InstallerApp:
                 icon_path = icon_dest
             except Exception:
                 icon_path = ""
-        else:
-            # ไม่เจอไฟล์โลโก้เลย ทั้งใน repo และในตัว installer เอง
-            # -> แจ้งเตือนแทนการเงียบแล้วปล่อยให้ shortcut ใช้ไอคอนดีฟอลต์
-            self.set_status(f"ไม่พบไฟล์ {logo_filename} จะใช้ไอคอนเริ่มต้นของ Python แทน", None)
 
-        exe, args = self.get_python_cmd()
-        pyw_exe = self.find_pythonw_path(exe, args)
-
-        # ให้ python ตัวที่เพิ่งลง pywin32/winshell รันโค้ดสร้าง .lnk เอง
+        # 3) สร้าง shortcut โดยสั่งให้ Python 3.12 (ตัวที่เพิ่งลง pywin32/winshell ไป)
+        #    เป็นคนรันโค้ดสร้าง .lnk เอง แทนที่ installer.exe จะ import winshell ตรง ๆ
+        #    (ตัว exe เองไม่จำเป็นต้องฝัง winshell มาด้วยตอน build)
         shortcut_script = f'''
 import os, winshell
 from win32com.client import Dispatch
@@ -451,12 +269,12 @@ desktop = winshell.desktop()
 shortcut_path = os.path.join(desktop, r"{APP_NAME}.lnk")
 shell = Dispatch("WScript.Shell")
 shortcut = shell.CreateShortCut(shortcut_path)
-shortcut.Targetpath = r"{pyw_exe}"
+shortcut.Targetpath = "pythonw.exe"
 shortcut.Arguments = r'"{main_file}"'
 shortcut.WorkingDirectory = r"{install_dir}"
 icon = r"{icon_path}"
 if icon and os.path.exists(icon):
-    shortcut.IconLocation = icon + ",0"
+    shortcut.IconLocation = icon
 shortcut.save()
 '''
         script_path = os.path.join(tempfile.gettempdir(), "make_shortcut.py")
@@ -464,27 +282,20 @@ shortcut.save()
             f.write(shortcut_script)
 
         result = subprocess.run(
-            [exe] + args + [script_path],
-            capture_output=True, text=True,
-            creationflags=CREATE_NO_WINDOW
+            ["py", "-3.12", script_path],
+            capture_output=True, text=True
         )
         if result.returncode != 0:
             raise RuntimeError(f"สร้างทางลัดบนเดสก์ท็อปล้มเหลว:\n{result.stderr}")
 
-    # ---- เปิดโปรแกรม: ต้องผ่าน cmd จริงๆ ตามที่ main.py ของโปรเจกต์ต้องการ ----
+    # ---- เปิดโปรแกรม ----
     def launch_program(self, main_file):
-        install_dir = os.path.dirname(main_file)
-        exe, args = self.get_python_cmd()
-        exe_part = _quote_if_needed(exe)
-        py_call = f'{exe_part} {" ".join(args)} "{main_file}"'.strip()
-        # เปิดหน้าต่าง cmd ใหม่แล้วรันโปรแกรมข้างใน (/k = เปิดค้างไว้ให้เห็น log/error)
-        cmd_line = f'start "" cmd /k {py_call}'
-        subprocess.Popen(cmd_line, cwd=install_dir, shell=True)
+        subprocess.Popen(["py", "-3.12", main_file], cwd=os.path.dirname(main_file))
 
 
 def main():
     root = tk.Tk()
-    InstallerApp(root)
+    app = InstallerApp(root)
     root.mainloop()
 
 
