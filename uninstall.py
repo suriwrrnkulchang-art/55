@@ -62,6 +62,7 @@ def load_install_info():
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
+        # ไฟล์เสียหายหรืออ่านไม่ได้ ถือว่าไม่มีข้อมูลการติดตั้งที่ใช้งานได้
         return None
 
 
@@ -162,11 +163,13 @@ def main():
     if not confirm:
         return
 
+    # 🔧 รวม error จากทุกขั้นตอน โดยแต่ละขั้นตอนทำงานอิสระจากกัน
     all_errors = []
 
     all_errors += remove_shortcut(shortcut_path)
     all_errors += remove_install_dir(install_dir)
 
+    # ถามแยกเรื่องไลบรารี เพราะไลบรารีบางตัวอาจถูกโปรแกรมอื่นใช้ร่วมด้วย
     if pip_packages:
         remove_libs = messagebox.askyesno(
             "ถอนไลบรารีด้วยหรือไม่",
@@ -179,6 +182,7 @@ def main():
 
     all_errors += remove_config()
 
+    # แสดงผลลัพธ์สุดท้าย: สำเร็จหรือมีคำเตือนบางส่วน แต่ไม่ทำให้เข้าใจผิดว่า "ล้มเหลวทั้งหมด"
     if not all_errors:
         messagebox.showinfo("สำเร็จ", f"ถอนการติดตั้ง {app_name} เรียบร้อยแล้ว")
     else:
