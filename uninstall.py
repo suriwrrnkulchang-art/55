@@ -15,6 +15,10 @@ uninstall.py — ตัวถอนการติดตั้งโปรแก
   5) (ถามแยก) จะถอนไลบรารีที่ pip ติดตั้งไว้ด้วยหรือไม่
   6) ลบไฟล์ install_info.json ทิ้ง (ถือว่าถอนเสร็จสมบูรณ์)
 
+✅ เวอร์ชันนี้แก้ไขแล้ว: แต่ละขั้นตอนแยก error handling ของตัวเอง
+   ถ้าขั้นตอนใดขั้นตอนหนึ่งพัง (เช่น หา python สำหรับถอน pip ไม่เจอ)
+   จะไม่ทำให้ขั้นตอนอื่นที่สำเร็จไปแล้วถูกรายงานว่า "ล้มเหลว" ทั้งหมด
+
 ใช้งานบน Windows เท่านั้น
 build เป็น .exe ได้ด้วย:
     pip install pyinstaller
@@ -22,12 +26,25 @@ build เป็น .exe ได้ด้วย:
 """
 
 import os
+import sys
 import json
 import shutil
 import tempfile
 import subprocess
 import tkinter as tk
 from tkinter import messagebox
+
+# 🔧 แก้ปัญหา UnicodeEncodeError ตอน print ข้อความภาษาไทยบน Windows console
+if sys.stdout is not None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr is not None:
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 APP_NAME = "FilterCore"  # ต้องตรงกับ APP_NAME ใน install.py
 
@@ -41,34 +58,80 @@ def load_install_info():
     """อ่านข้อมูลการติดตั้งที่ install.py บันทึกไว้ ถ้าไม่พบไฟล์ = ยังไม่เคยติดตั้ง/ถอนไปแล้ว"""
     if not os.path.exists(CONFIG_FILE):
         return None
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def remove_shortcut(shortcut_path):
-    if shortcut_path and os.path.exists(shortcut_path):
-        os.remove(shortcut_path)
+    """ลบทางลัดบนเดสก์ท็อป — แยก error ของตัวเอง ไม่ให้ล้มขั้นตอนอื่น"""
+    errors = []
+    try:
+        if shortcut_path and os.path.exists(shortcut_path):
+            os.remove(shortcut_path)
+    except Exception as e:
+        errors.append(f"ลบทางลัดไม่สำเร็จ: {e}")
+    return errors
 
 
 def remove_install_dir(install_dir):
-    if install_dir and os.path.exists(install_dir):
-        shutil.rmtree(install_dir, ignore_errors=True)
+    """ลบโฟลเดอร์ที่ติดตั้ง — แยก error ของตัวเอง ไม่ให้ล้มขั้นตอนอื่น"""
+    errors = []
+    try:
+        if install_dir and os.path.exists(install_dir):
+            shutil.rmtree(install_dir, ignore_errors=False)
+    except Exception as e:
+        errors.append(f"ลบโฟลเดอร์ติดตั้งไม่สำเร็จ: {e}")
+    return errors
 
 
 def uninstall_pip_packages(python_exe, packages):
-    if not python_exe or not packages:
-        return
-    subprocess.run(
-        [python_exe, "-m", "pip", "uninstall", "-y", *packages],
-        capture_output=True, text=True, creationflags=CREATE_NO_WINDOW
-    )
+    """
+    ถอนไลบรารีที่ pip ติดตั้งไว้ — แยก error ของตัวเอง
+    ตรวจสอบก่อนว่า python_exe มีอยู่จริง ป้องกัน WinError 2 (หาไฟล์ไม่เจอ)
+    """
+    errors = []
+    if not packages:
+        return errors
+
+    if not python_exe or not os.path.isfile(python_exe):
+        errors.append(
+            "ไม่พบตัว Python ที่ใช้ติดตั้งไลบรารีไว้ (อาจถูกลบหรือย้ายเครื่องไปแล้ว) "
+            "ข้ามขั้นตอนถอนไลบรารี — โปรแกรมหลักถูกลบเรียบร้อยแล้ว"
+        )
+        return errors
+
+    try:
+        result = subprocess.run(
+            [python_exe, "-m", "pip", "uninstall", "-y", *packages],
+            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
+            timeout=120
+        )
+        if result.returncode != 0:
+            errors.append(f"ถอนไลบรารีบางส่วนไม่สำเร็จ (รหัส {result.returncode})")
+    except FileNotFoundError:
+        errors.append("ไม่พบไฟล์ python ที่ระบุไว้ ข้ามขั้นตอนถอนไลบรารี")
+    except subprocess.TimeoutExpired:
+        errors.append("ถอนไลบรารีใช้เวลานานเกินไป ข้ามขั้นตอนนี้")
+    except Exception as e:
+        errors.append(f"ถอนไลบรารีไม่สำเร็จ: {e}")
+
+    return errors
 
 
 def remove_config():
-    if os.path.exists(CONFIG_FILE):
-        os.remove(CONFIG_FILE)
-    if os.path.isdir(CONFIG_DIR) and not os.listdir(CONFIG_DIR):
-        os.rmdir(CONFIG_DIR)
+    """ลบไฟล์ config — แยก error ของตัวเอง"""
+    errors = []
+    try:
+        if os.path.exists(CONFIG_FILE):
+            os.remove(CONFIG_FILE)
+        if os.path.isdir(CONFIG_DIR) and not os.listdir(CONFIG_DIR):
+            os.rmdir(CONFIG_DIR)
+    except Exception as e:
+        errors.append(f"ลบไฟล์ข้อมูลการติดตั้งไม่สำเร็จ: {e}")
+    return errors
 
 
 def main():
@@ -99,28 +162,38 @@ def main():
     if not confirm:
         return
 
-    try:
-        remove_shortcut(shortcut_path)
-        remove_install_dir(install_dir)
+    all_errors = []
 
-        # ถามแยกเรื่องไลบรารี เพราะไลบรารีบางตัวอาจถูกโปรแกรมอื่นใช้ร่วมด้วย
-        if pip_packages:
-            remove_libs = messagebox.askyesno(
-                "ถอนไลบรารีด้วยหรือไม่",
-                "ต้องการถอนไลบรารีที่ติดตั้งไว้สำหรับโปรแกรมนี้ด้วยหรือไม่?\n"
-                f"({', '.join(pip_packages)})\n\n"
-                "หากไม่แน่ใจว่าโปรแกรมอื่นใช้ไลบรารีเหล่านี้อยู่หรือไม่ ให้เลือก 'ไม่'"
-            )
-            if remove_libs:
-                uninstall_pip_packages(python_exe, pip_packages)
+    all_errors += remove_shortcut(shortcut_path)
+    all_errors += remove_install_dir(install_dir)
 
-        remove_config()
+    if pip_packages:
+        remove_libs = messagebox.askyesno(
+            "ถอนไลบรารีด้วยหรือไม่",
+            "ต้องการถอนไลบรารีที่ติดตั้งไว้สำหรับโปรแกรมนี้ด้วยหรือไม่?\n"
+            f"({', '.join(pip_packages)})\n\n"
+            "หากไม่แน่ใจว่าโปรแกรมอื่นใช้ไลบรารีเหล่านี้อยู่หรือไม่ ให้เลือก 'ไม่'"
+        )
+        if remove_libs:
+            all_errors += uninstall_pip_packages(python_exe, pip_packages)
 
+    all_errors += remove_config()
+
+    if not all_errors:
         messagebox.showinfo("สำเร็จ", f"ถอนการติดตั้ง {app_name} เรียบร้อยแล้ว")
-
-    except Exception as e:
-        messagebox.showerror("เกิดข้อผิดพลาด", f"ถอนการติดตั้งไม่สำเร็จ:\n{e}")
+    else:
+        detail = "\n".join(f"- {err}" for err in all_errors)
+        messagebox.showwarning(
+            "ถอนการติดตั้งเสร็จสิ้น (มีบางรายการข้าม)",
+            f"ถอนการติดตั้ง {app_name} เสร็จสิ้นแล้ว แต่มีบางขั้นตอนที่ข้ามไป:\n\n{detail}"
+        )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        try:
+            messagebox.showerror("เกิดข้อผิดพลาดร้ายแรง", f"ถอนการติดตั้งไม่สำเร็จ:\n{e}")
+        except Exception:
+            print(f"เกิดข้อผิดพลาดร้ายแรง: {e}")
